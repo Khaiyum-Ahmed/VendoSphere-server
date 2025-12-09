@@ -6,8 +6,7 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// infowebdevelopment281_db_user
-// BLx5XdEeWhm5wHbO
+
 // Middleware
 app.use(express.json());
 app.use(cors());
@@ -27,16 +26,52 @@ const client = new MongoClient(uri, {
   }
 });
 
+
 async function run() {
   try {
     // Connect the client to the server	(optional starting in v4.7)
     await client.connect();
 
+    // choose your database
+    const db = client.db("VenderSphere_E-Commerce"); //database name
+
+    const usersCollection = db.collection('users');
+
+    // users api
+
+    app.post('/users', async (req, res) => {
+      try {
+        const { email } = req.body;
+
+        // Check if user already exists
+        const userExists = await usersCollection.findOne({ email });
+        if (userExists) {
+          return res.status(200).json({
+            message: 'User already exists',
+            inserted: false,
+          });
+        }
+
+        // Insert new user
+        const user = req.body;
+        const result = await usersCollection.insertOne(user);
+
+        return res.status(201).json({
+          message: 'User created successfully',
+          inserted: true,
+          result,
+        });
+      } catch (error) {
+        console.error('User insert error:', error);
+
+        // Send only one error response
+        if (!res.headersSent) {
+          return res.status(500).json({ message: 'Internal Server Error' });
+        }
+      }
+    });
 
 
-
-
-    
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
