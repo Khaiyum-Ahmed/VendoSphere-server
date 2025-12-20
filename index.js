@@ -1,282 +1,351 @@
 const express = require("express");
 const cors = require("cors");
-const dotenv = require('dotenv');
-const { MongoClient, ServerApiVersion } = require('mongodb');
+const dotenv = require("dotenv");
+const nodemailer = require("nodemailer");
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+
 dotenv.config();
+
+const transporter = nodemailer.createTransport({
+  host: process.env.MAIL_HOST,
+  port: process.env.MAIL_PORT,
+  auth: {
+    user: process.env.MAIL_USER,
+    pass: process.env.MAIL_PASS,
+  },
+});
+
+   
+
+
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-
 // Middleware
-app.use(express.json());
 app.use(cors());
+app.use(express.json());
 
-// MongoDB connection
-
-
-
+// MongoDB URI
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.rukwqku.mongodb.net/?appName=Cluster0`;
 
-// Create a MongoClient with a MongoClientOptions object to set the Stable API version
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
     strict: true,
     deprecationErrors: true,
-  }
+  },
 });
-
 
 async function run() {
   try {
-    // Connect the client to the server	(optional starting in v4.7)
     await client.connect();
 
-    // choose your database
-    const db = client.db("VenderSphere_E-Commerce"); //database name
+    const db = client.db("VenderSphere_E-Commerce");
 
-    const usersCollection = db.collection('users');
+    const usersCollection = db.collection("users");
     const sellersCollection = db.collection("sellers");
     const productsCollection = db.collection("products");
     const categoriesCollection = db.collection("categories");
+    const reviewsCollection = db.collection("reviews");
+    const testimonialsCollection = db.collection("testimonials");
+    const newsletterCollection = db.collection("newsletter");
 
 
+    /* ================= USERS ================= */
 
-
-    // GET: Get user role by email
-    app.get('/users/:email/role', async (req, res) => {
-      try {
-        const email = req.params.email;
-
-        if (!email) {
-          return res.status(400).send({ message: 'Email is required' });
-        }
-
-        const user = await usersCollection.findOne({ email });
-
-        if (!user) {
-          return res.status(404).send({ message: 'User not found' });
-        }
-
-        res.send({ role: user.role || 'seller' });
-      } catch (error) {
-        console.error('Error getting user role:', error);
-        res.status(500).send({ message: 'Failed to get role' });
-      }
-    });
-    // USER REGISTER API
-
-    app.post('/users', async (req, res) => {
-      try {
-        const { email } = req.body;
-
-        // Check if user already exists
-        const userExists = await usersCollection.findOne({ email });
-        if (userExists) {
-          return res.status(200).json({
-            message: 'User already exists',
-            inserted: false,
-          });
-        }
-
-        // Insert new user
-        const user = req.body;
-        const result = await usersCollection.insertOne(user);
-
-        return res.status(201).json({
-          message: 'User created successfully',
-          inserted: true,
-          result,
-        });
-      } catch (error) {
-        console.error('User insert error:', error);
-
-        // Send only one error response
-        if (!res.headersSent) {
-          return res.status(500).json({ message: 'Internal Server Error' });
-        }
-      }
+    app.post("/users", async (req, res) => {
+      const { email } = req.body;
+      const exists = await usersCollection.findOne({ email });
+      if (exists) return res.send({ inserted: false });
+      const result = await usersCollection.insertOne(req.body);
+      res.send({ inserted: true, result });
     });
 
-    // ✅ Get user profile by email
     app.get("/users/:email", async (req, res) => {
-      const email = req.params.email;
-      const user = await usersCollection.findOne({ email });
-      if (!user) return res.status(404).json({ message: "User not found" });
-      res.json(user);
+      const user = await usersCollection.findOne({ email: req.params.email });
+      res.send(user);
     });
-    // ----------------------
-    // SELLER REQUEST API
-    // -------------------------
 
-    // Submit seller request
+    app.get("/users/:email/role", async (req, res) => {
+      const user = await usersCollection.findOne({ email: req.params.email });
+      res.send({ role: user?.role || "user" });
+    });
+
+    /* ================= SELLER ================= */
+
     app.post("/seller-request", async (req, res) => {
+      const exists = await sellersCollection.findOne({ uid: req.body.uid });
+      if (exists) return res.status(400).send({ message: "Already applied" });
+
+      const result = await sellersCollection.insertOne({
+        ...req.body,
+        status: "pending",
+        createdAt: new Date(),
+      });
+
+      res.send(result);
+    });
+
+    // GET /sellers/top
+    app.get("/sellers/top", async (req, res) => {
       try {
-        const { uid } = req.body;
+        const sellers = await sellersCollection
+          .find()
+          .sort({ rating: -1 }) // top-rated sellers
+          .limit(8)
+          .toArray();
 
-        // Check if seller already applied
-        const existing = await sellersCollection.findOne({ uid });
+        // Include product count for each seller
+        const sellersWithCount = await Promise.all(
+          sellers.map(async (seller) => {
+            const count = await productsCollection.countDocuments({ sellerEmail: seller.email });
+            return { ...seller, productCount: count };
+          })
+        );
 
-        if (existing) {
-          return res.status(400).json({
-            message: "You already submitted a seller request.",
-          });
-        }
-
-        // Insert seller request
-        const sellerData = {
-          ...req.body,
-          status: "pending",
-          createdAt: new Date(),
-        };
-
-        const result = await sellersCollection.insertOne(sellerData);
-
-        res.status(201).json({
-          message: "Seller application submitted successfully!",
-          insertedId: result.insertedId,
-        });
+        res.json(sellersWithCount);
       } catch (error) {
-        console.error("Seller request error:", error);
-        res.status(500).json({ message: "Internal Server Error" });
+        console.error(error);
+        res.status(500).json({ message: "Failed to fetch top sellers" });
       }
     });
 
-    // Get all seller requests (ADMIN)
-    // app.get("/seller-request", async (req, res) => {
-    //   try {
-    //     const requests = await sellersCollection
-    //       .find()
-    //       .sort({ createdAt: -1 })
-    //       .toArray();
 
-    //     res.json(requests);
-    //   } catch (error) {
-    //     console.error("Fetch seller requests error:", error);
-    //     res.status(500).json({ message: "Internal Server Error" });
-    //   }
-    // });
-
-    // Update seller status (ADMIN approve / reject)
-    // app.patch("/seller-request/:id", async (req, res) => {
-    //   try {
-    //     const { status } = req.body;
-    //     const { id } = req.params;
-
-    //     const result = await sellersCollection.updateOne(
-    //       { _id: new ObjectId(id) },
-    //       { $set: { status: status, updatedAt: new Date() } }
-    //     );
-
-    //     res.json({
-    //       message: "Seller status updated",
-    //       result,
-    //     });
-    //   } catch (error) {
-    //     console.error("Update seller status error:", error);
-    //     res.status(500).json({ message: "Internal Server Error" });
-    //   }
-    // });
-
-    // -----------------
-    // add product register api
-    //----------------
+    /* ================= ADD PRODUCT ================= */
 
     app.post("/add-product", async (req, res) => {
-      try {
-        let product = req.body;
+      let product = req.body;
 
-        // Ensure lowercase categories (avoids duplicate categories)
-        product.category = product.category.toLowerCase();
-        product.subcategory = product.subcategory.toLowerCase();
+      product.category = product.category.toLowerCase();
+      product.createdAt = new Date();
+      product.rating = 0;
+      product.reviewCount = 0;
 
-        // 1️⃣ Insert product into main products collection
-        const result = await productsCollection.insertOne(product);
-        const insertedId = result.insertedId;
+      const result = await productsCollection.insertOne(product);
 
-        // Attach the MongoDB _id to product copy
-        const productWithId = { ...product, _id: insertedId };
+      await categoriesCollection.updateOne(
+        { category: product.category },
+        {
+          $setOnInsert: { category: product.category },
+          $push: { products: { ...product, _id: result.insertedId } },
+        },
+        { upsert: true }
+      );
 
-        // 2️⃣ Ensure "products" field exists and is an array
-        await categoriesCollection.updateOne(
-          {
-            category: product.category,
-            products: { $exists: true, $not: { $type: "array" } }
-          },
-          {
-            $set: { products: [] }
-          }
-        );
-
-        // 3️⃣ Add product to categories collection (safe version)
-        await categoriesCollection.updateOne(
-          { category: product.category },
-          {
-            $setOnInsert: {
-              category: product.category
-            },
-            $push: {
-              products: { $each: [productWithId] }
-            }
-          },
-          { upsert: true }
-        );
-
-        res.json({ insertedId });
-
-      } catch (error) {
-        console.error("Error adding product:", error);
-        res.status(500).json({ message: "Failed to add product" });
-      }
+      res.send({ insertedId: result.insertedId });
     });
 
+    /* ================= PRODUCTS ================= */
 
-    // -------------------------
-    // show product categories
-    // --------------------
     app.get("/products", async (req, res) => {
-      const category = req.query.category; // e.g., /products?category=Electronics
+      const category = req.query.category;
       const query = category ? { category } : {};
       const products = await productsCollection.find(query).toArray();
       res.send(products);
     });
 
-    // ----------------------
-    // GET all categories
-    // ------------------
-    app.get("/categories", async (req, res) => {
+    app.get("/products/featured", async (req, res) => {
+      const products = await productsCollection
+        .find()
+        .sort({ rating: -1, createdAt: -1 })
+        .limit(12)
+        .toArray();
+
+      res.send(products);
+    });
+
+    app.get("/product/:id", async (req, res) => {
+      const product = await productsCollection.findOne({
+        _id: new ObjectId(req.params.id),
+      });
+      res.send(product);
+    });
+
+    // GET /products/flash-sale
+    app.get("/products/flash-sale", async (req, res) => {
       try {
-        const categories = await categoriesCollection.find().toArray();
-        res.json(categories);
+        // Fetch products that have a discount or flashSale flag
+        const products = await productsCollection
+          .find({ discount: { $exists: true, $gt: 0 } })
+          .sort({ createdAt: -1 }) // newest first
+          .limit(12) // max 12 for carousel
+          .toArray();
+
+        res.json(products);
       } catch (error) {
-        console.error("Error fetching categories:", error);
-        res.status(500).json({ message: "Failed to load categories" });
+        console.error("Error fetching flash sale products:", error);
+        res.status(500).json({ message: "Failed to load flash sale products" });
       }
     });
 
 
-    // Send a ping to confirm a successful connection
-    await client.db("admin").command({ ping: 1 });
-    console.log("Pinged your deployment. You successfully connected to MongoDB!");
-  } finally {
-    // Ensures that the client will close when you finish/error
-    // await client.close();
+    /* ================= CATEGORIES ================= */
+
+    app.get("/categories", async (req, res) => {
+      const categories = await categoriesCollection.find().toArray();
+      res.send(categories);
+    });
+
+    /* ================= REVIEWS ================= */
+
+    app.get("/product/:id/reviews", async (req, res) => {
+      const reviews = await reviewsCollection
+        .find({ productId: req.params.id })
+        .sort({ createdAt: -1 })
+        .toArray();
+
+      res.send(reviews);
+    });
+
+    app.post("/product/:id/review", async (req, res) => {
+      const { userEmail, userName, rating, comment } = req.body;
+      const productId = req.params.id;
+
+      const exists = await reviewsCollection.findOne({
+        productId,
+        userEmail,
+      });
+
+      if (exists) {
+        return res.status(400).send({ message: "Already reviewed" });
+      }
+
+      await reviewsCollection.insertOne({
+        productId,
+        userEmail,
+        userName,
+        rating: Number(rating),
+        comment,
+        createdAt: new Date(),
+      });
+
+      const reviews = await reviewsCollection
+        .find({ productId })
+        .toArray();
+
+      const avg =
+        reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length;
+
+      await productsCollection.updateOne(
+        { _id: new ObjectId(productId) },
+        {
+          $set: {
+            rating: Number(avg.toFixed(1)),
+            reviewCount: reviews.length,
+          },
+        }
+      );
+
+      res.send({ success: true });
+    });
+
+
+    /* ================= testimonials ================= */
+
+
+    // ----------------------
+    // GET all testimonials
+    // ----------------------
+    app.get("/testimonials", async (req, res) => {
+      try {
+
+
+        const testimonials = await testimonialsCollection.find().toArray();
+        res.json(testimonials);
+      } catch (error) {
+        console.error("Error fetching testimonials:", error);
+        res.status(500).json({ message: "Failed to fetch testimonials" });
+      }
+    });
+
+
+    // ----------------------
+    // newsletter
+    // ----------------------
+
+    app.post("/newsletter", async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    // Basic validation
+    if (!email) {
+      return res.status(400).json({ message: "Email is required" });
+    }
+
+    // Check duplicate
+    const exists = await newsletterCollection.findOne({ email });
+    if (exists) {
+      return res.status(409).json({ message: "Email already exists" });
+    }
+
+    // Save to DB
+    await newsletterCollection.insertOne({
+      email,
+      subscribedAt: new Date(),
+    });
+
+    // Send confirmation email
+    await transporter.sendMail({
+      from: `"VenderSphere" <${process.env.MAIL_USER}>`,
+      to: email,
+      subject: "🎉 Subscription Confirmed!",
+      html: `
+        <div style="font-family: Arial, sans-serif; line-height: 1.6">
+          <h2>Welcome to VenderSphere 🎉</h2>
+          <p>Thanks for subscribing to our newsletter.</p>
+          <p>You’ll receive:</p>
+          <ul>
+            <li>🔥 Flash Sale Alerts</li>
+            <li>🛍️ New Product Updates</li>
+            <li>🎁 Exclusive Offers</li>
+          </ul>
+          <p>Stay with us!</p>
+          <strong>— VenderSphere Team</strong>
+        </div>
+      `,
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Newsletter Error:", error);
+    res.status(500).json({ message: "Subscription failed" });
   }
-}
-run().catch(console.dir);
-
-
-
-
-
-
-
-// Test route
-app.get("/", (req, res) => {
-  res.send("venderSphere Backend server is running!");
 });
 
-// Start server
+
+
+
+    /* ================= RELATED PRODUCTS ================= */
+
+    app.get("/products/related/:id", async (req, res) => {
+      const product = await productsCollection.findOne({
+        _id: new ObjectId(req.params.id),
+      });
+
+      if (!product) return res.send([]);
+
+      const related = await productsCollection
+        .find({
+          category: product.category,
+          _id: { $ne: product._id },
+        })
+        .limit(8)
+        .toArray();
+
+      res.send(related);
+    });
+
+    console.log("✅ MongoDB connected");
+  } finally {
+  }
+}
+
+run().catch(console.dir);
+
+app.get("/", (req, res) => {
+  res.send("✅ VenderSphere Backend Running");
+});
+
 app.listen(PORT, () => {
-  console.log(`✅ venderSphere Server is running on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });
