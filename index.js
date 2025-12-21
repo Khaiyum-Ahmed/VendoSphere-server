@@ -163,7 +163,11 @@ async function run() {
       res.send(product);
     });
 
+
+    // --------------------
     // GET /products/flash-sale
+    // -------------------
+
     app.get("/products/flash-sale", async (req, res) => {
       try {
         // Fetch products that have a discount or flashSale flag
@@ -313,7 +317,11 @@ async function run() {
         res.status(500).json({ message: "Subscription failed" });
       }
     });
+
+    
     /* ================= Cart PRODUCTS ================= */
+
+
     app.get("/cart/:email", async (req, res) => {
       const email = req.params.email;
 
