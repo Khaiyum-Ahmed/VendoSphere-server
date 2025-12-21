@@ -139,12 +139,110 @@ async function run() {
 
     /* ================= PRODUCTS ================= */
 
+    // ----------------------
+    // GET /products (FILTER + SORT + PAGINATION)
+    // ----------------------
     app.get("/products", async (req, res) => {
-      const category = req.query.category;
-      const query = category ? { category } : {};
-      const products = await productsCollection.find(query).toArray();
-      res.send(products);
+      try {
+        const {
+          category,
+          search,
+          price_min,
+          price_max,
+          rating_gte,
+          seller,
+          sort,
+          flash,
+          page = 1,
+          limit = 12,
+        } = req.query;
+
+        const query = {};
+
+        // Category
+        if (category) {
+          query.category = category.toLowerCase();
+        }
+
+        // Search
+        if (search) {
+          query.productName = { $regex: search, $options: "i" };
+        }
+
+        // Price range
+        if (price_min || price_max) {
+          query.price = {};
+          if (price_min) query.price.$gte = Number(price_min);
+          if (price_max) query.price.$lte = Number(price_max);
+        }
+
+        // Rating
+        if (rating_gte) {
+          query.rating = { $gte: Number(rating_gte) };
+        }
+
+        // Flash sale
+        if (flash === "true") {
+          query.discount = { $gt: 0 };
+        }
+
+        // Seller
+        if (seller) {
+          query.sellerId = seller;
+        }
+
+        // Sorting
+        let sortQuery = {};
+        switch (sort) {
+          case "price_asc":
+            sortQuery.price = 1;
+            break;
+          case "price_desc":
+            sortQuery.price = -1;
+            break;
+          case "rating_desc":
+            sortQuery.rating = -1;
+            break;
+          case "newest":
+            sortQuery.createdAt = -1;
+            break;
+          case "sold_desc":
+            sortQuery.sold = -1;
+            break;
+          default:
+            sortQuery.createdAt = -1;
+        }
+
+        const skip = (Number(page) - 1) * Number(limit);
+
+        const products = await productsCollection
+          .find(query)
+          .sort(sortQuery)
+          .skip(skip)
+          .limit(Number(limit))
+          .toArray();
+
+        const total = await productsCollection.countDocuments(query);
+
+        res.json({
+          products,
+          total,
+          page: Number(page),
+          totalPages: Math.ceil(total / limit),
+        });
+      } catch (error) {
+        console.error("Shop products error:", error);
+        res.status(500).json({ message: "Failed to load products" });
+      }
     });
+
+
+    // app.get("/products", async (req, res) => {
+    //   const category = req.query.category;
+    //   const query = category ? { category } : {};
+    //   const products = await productsCollection.find(query).toArray();
+    //   res.send(products);
+    // });
 
     app.get("/products/featured", async (req, res) => {
       const products = await productsCollection
@@ -318,7 +416,7 @@ async function run() {
       }
     });
 
-    
+
     /* ================= Cart PRODUCTS ================= */
 
 
