@@ -70,7 +70,7 @@ async function run() {
 
     app.get("/users/:email/role", async (req, res) => {
       const user = await usersCollection.findOne({ email: req.params.email });
-      res.send({ role: user?.role || "user" });
+      res.send({ role: user?.role || "customer" });
     });
 
     /* ================= SELLER ================= */
@@ -111,6 +111,54 @@ async function run() {
         res.status(500).json({ message: "Failed to fetch top sellers" });
       }
     });
+
+    // GET seller products with pagination
+    app.get("/seller/products", async (req, res) => {
+      const email = req.query.email;
+      const page = parseInt(req.query.page) || 1;
+      const limit = parseInt(req.query.limit) || 10;
+      const skip = (page - 1) * limit;
+
+      if (!email) {
+        return res.status(400).send({ message: "Seller email required" });
+      }
+
+      const query = { sellerEmail: email };
+
+      const total = await productsCollection.countDocuments(query);
+      const products = await productsCollection
+        .find(query)
+        .skip(skip)
+        .limit(limit)
+        .sort({ createdAt: -1 })
+        .toArray();
+
+      res.send({
+        products,
+        total,
+        totalPages: Math.ceil(total / limit),
+        currentPage: page,
+      });
+    });
+
+
+    // DELETE product
+    app.delete("/products/:id", async (req, res) => {
+      const id = req.params.id;
+      await productsCollection.deleteOne({ _id: new ObjectId(id) });
+      res.send({ success: true });
+    });
+
+    // TOGGLE status
+    app.patch("/products/status/:id", async (req, res) => {
+      const { status } = req.body;
+      await productsCollection.updateOne(
+        { _id: new ObjectId(req.params.id) },
+        { $set: { status } }
+      );
+      res.send({ success: true });
+    });
+
 
 
     /* ================= ADD PRODUCT ================= */
@@ -166,7 +214,10 @@ async function run() {
 
         // Search
         if (search) {
-          query.productName = { $regex: search, $options: "i" };
+          query.$or = [
+            { productName: { $regex: search, $options: "i" } },
+            { brand: { $regex: search, $options: "i" } },
+          ];
         }
 
         // Price range
@@ -254,11 +305,45 @@ async function run() {
       res.send(products);
     });
 
+    // Edit Product by id
+
     app.get("/product/:id", async (req, res) => {
-      const product = await productsCollection.findOne({
-        _id: new ObjectId(req.params.id),
-      });
-      res.send(product);
+      try {
+        const product = await productsCollection.findOne({
+          _id: new ObjectId(req.params.id),
+        });
+
+        res.send(product);
+      } catch (error) {
+        console.error("Get Product Error:", error);
+        res.status(500).send({ message: "Failed to fetch product" });
+      }
+    });
+
+    app.patch("/products/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        const updatedData = req.body;
+
+        // Prevent ID overwrite
+        delete updatedData._id;
+
+        const result = await productsCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: updatedData }
+        );
+
+        if (result.modifiedCount === 0) {
+          return res
+            .status(400)
+            .send({ message: "No changes detected" });
+        }
+
+        res.send({ success: true });
+      } catch (error) {
+        console.error("Update Product Error:", error);
+        res.status(500).send({ message: "Product update failed" });
+      }
     });
 
 
