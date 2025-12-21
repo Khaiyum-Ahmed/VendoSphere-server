@@ -15,7 +15,7 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-   
+
 
 
 const app = express();
@@ -49,6 +49,8 @@ async function run() {
     const reviewsCollection = db.collection("reviews");
     const testimonialsCollection = db.collection("testimonials");
     const newsletterCollection = db.collection("newsletter");
+    const cartsCollection = db.collection("carts");
+
 
 
     /* ================= USERS ================= */
@@ -264,32 +266,32 @@ async function run() {
     // ----------------------
 
     app.post("/newsletter", async (req, res) => {
-  try {
-    const { email } = req.body;
+      try {
+        const { email } = req.body;
 
-    // Basic validation
-    if (!email) {
-      return res.status(400).json({ message: "Email is required" });
-    }
+        // Basic validation
+        if (!email) {
+          return res.status(400).json({ message: "Email is required" });
+        }
 
-    // Check duplicate
-    const exists = await newsletterCollection.findOne({ email });
-    if (exists) {
-      return res.status(409).json({ message: "Email already exists" });
-    }
+        // Check duplicate
+        const exists = await newsletterCollection.findOne({ email });
+        if (exists) {
+          return res.status(409).json({ message: "Email already exists" });
+        }
 
-    // Save to DB
-    await newsletterCollection.insertOne({
-      email,
-      subscribedAt: new Date(),
-    });
+        // Save to DB
+        await newsletterCollection.insertOne({
+          email,
+          subscribedAt: new Date(),
+        });
 
-    // Send confirmation email
-    await transporter.sendMail({
-      from: `"VenderSphere" <${process.env.MAIL_USER}>`,
-      to: email,
-      subject: "🎉 Subscription Confirmed!",
-      html: `
+        // Send confirmation email
+        await transporter.sendMail({
+          from: `"VenderSphere" <${process.env.MAIL_USER}>`,
+          to: email,
+          subject: "🎉 Subscription Confirmed!",
+          html: `
         <div style="font-family: Arial, sans-serif; line-height: 1.6">
           <h2>Welcome to VenderSphere 🎉</h2>
           <p>Thanks for subscribing to our newsletter.</p>
@@ -303,14 +305,126 @@ async function run() {
           <strong>— VenderSphere Team</strong>
         </div>
       `,
+        });
+
+        res.json({ success: true });
+      } catch (error) {
+        console.error("Newsletter Error:", error);
+        res.status(500).json({ message: "Subscription failed" });
+      }
+    });
+    /* ================= Cart PRODUCTS ================= */
+    app.get("/cart/:email", async (req, res) => {
+      const email = req.params.email;
+
+      const cart = await cartsCollection.findOne({ userEmail: email });
+
+      res.send(cart || { userEmail: email, items: [] });
     });
 
-    res.json({ success: true });
-  } catch (error) {
-    console.error("Newsletter Error:", error);
-    res.status(500).json({ message: "Subscription failed" });
-  }
-});
+
+    app.post("/cart", async (req, res) => {
+      const { userEmail, product } = req.body;
+
+      const filter = { userEmail };
+      const cart = await cartsCollection.findOne(filter);
+
+      if (!cart) {
+        // create new cart
+        await cartsCollection.insertOne({
+          userEmail,
+          items: [
+            {
+              productId: new ObjectId(product._id),
+              name: product.name,
+              price: product.price,
+              image: product.images,
+              quantity: 1,
+            },
+          ],
+          updatedAt: new Date(),
+        });
+
+        return res.send({ success: true, message: "Cart created" });
+      }
+
+      const exists = cart.items.find(
+        (item) => item.productId.toString() === product._id
+      );
+
+      if (exists) {
+        await cartsCollection.updateOne(
+          { userEmail, "items.productId": new ObjectId(product._id) },
+          {
+            $inc: { "items.$.quantity": 1 },
+            $set: { updatedAt: new Date() },
+          }
+        );
+      } else {
+        await cartsCollection.updateOne(
+          { userEmail },
+          {
+            $push: {
+              items: {
+                productId: new ObjectId(product._id),
+                name: product.name,
+                price: product.price,
+                image: product.images,
+                quantity: 1,
+              },
+            },
+            $set: { updatedAt: new Date() },
+          }
+        );
+      }
+
+      res.send({ success: true });
+    });
+
+
+    // update quantity
+
+    app.patch("/cart/quantity", async (req, res) => {
+      const { userEmail, productId, quantity } = req.body;
+
+      if (quantity < 1) {
+        return res.status(400).send({ message: "Quantity must be at least 1" });
+      }
+
+      await cartsCollection.updateOne(
+        { userEmail, "items.productId": new ObjectId(productId) },
+        {
+          $set: {
+            "items.$.quantity": quantity,
+            updatedAt: new Date(),
+          },
+        }
+      );
+
+      res.send({ success: true });
+    });
+
+
+    // remove cart 
+    app.delete("/cart/item", async (req, res) => {
+      const { userEmail, productId } = req.body;
+
+      await cartsCollection.updateOne(
+        { userEmail },
+        {
+          $pull: { items: { productId: new ObjectId(productId) } },
+          $set: { updatedAt: new Date() },
+        }
+      );
+
+      res.send({ success: true });
+    });
+
+    // clear cart 
+    app.delete("/cart/:email", async (req, res) => {
+      await cartsCollection.deleteOne({ userEmail: req.params.email });
+      res.send({ success: true });
+    });
 
 
 
