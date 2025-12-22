@@ -50,6 +50,8 @@ async function run() {
     const testimonialsCollection = db.collection("testimonials");
     const newsletterCollection = db.collection("newsletter");
     const cartsCollection = db.collection("carts");
+    const ordersCollection = db.collection("orders");
+    const payoutsCollection = db.collection("payouts");
 
 
 
@@ -72,6 +74,7 @@ async function run() {
       const user = await usersCollection.findOne({ email: req.params.email });
       res.send({ role: user?.role || "customer" });
     });
+
 
     /* ================= SELLER ================= */
 
@@ -159,6 +162,362 @@ async function run() {
       res.send({ success: true });
     });
 
+
+
+    app.get("/seller/dashboard-overview", async (req, res) => {
+      const email = req.query.email;
+
+      if (!email) {
+        return res.status(400).send({ message: "Seller email required" });
+      }
+
+      // collections
+      const products = db.collection("products");
+      const orders = db.collection("orders");
+
+      // total products
+      const totalProducts = await products.countDocuments({
+        sellerEmail: email,
+      });
+
+      // active orders
+      const activeOrders = await orders.countDocuments({
+        sellerEmail: email,
+        status: { $in: ["Pending", "Processing"] },
+      });
+
+      // recent orders
+      const recentOrders = await orders
+        .find({ sellerEmail: email })
+        .sort({ createdAt: -1 })
+        .limit(5)
+        .toArray();
+
+      // revenue calculations
+      const completedOrders = await orders
+        .find({ sellerEmail: email, status: "Delivered" })
+        .toArray();
+
+      const totalRevenue = completedOrders.reduce(
+        (sum, order) => sum + order.totalAmount,
+        0
+      );
+
+      const pendingEarnings = completedOrders
+        .filter((o) => !o.payoutRequested)
+        .reduce((sum, o) => sum + o.totalAmount, 0);
+
+      res.send({
+        totalProducts,
+        activeOrders,
+        pendingEarnings: pendingEarnings.toFixed(2),
+        totalRevenue: totalRevenue.toFixed(2),
+        recentOrders,
+      });
+    });
+
+
+    /* ================= SELLER Sales Report ================= */
+
+
+    app.get("/seller/sales-report", async (req, res) => {
+      try {
+        const sellerEmail = req.query.email;
+        if (!sellerEmail) return res.status(400).json({ message: "Seller email required" });
+
+        // Get all orders for this seller
+        const orders = await ordersCollection
+          .find({ "products.sellerEmail": sellerEmail })
+          .toArray();
+
+        // Revenue by month (last 12 months)
+        const revenueByMonth = {};
+        const now = new Date();
+        for (let i = 0; i < 12; i++) {
+          const month = new Date(now.getFullYear(), now.getMonth() - i, 1);
+          const key = month.toLocaleString("default", { month: "short", year: "numeric" });
+          revenueByMonth[key] = 0;
+        }
+
+        orders.forEach(order => {
+          order.products.forEach(p => {
+            if (p.sellerEmail === sellerEmail) {
+              const orderDate = new Date(order.createdAt);
+              const key = orderDate.toLocaleString("default", { month: "short", year: "numeric" });
+              if (revenueByMonth[key] !== undefined) {
+                revenueByMonth[key] += p.price * p.quantity;
+              }
+            }
+          });
+        });
+
+        // Orders by status
+        const ordersByStatus = orders.reduce((acc, order) => {
+          acc[order.status] = (acc[order.status] || 0) + 1;
+          return acc;
+        }, {});
+
+        res.json({
+          revenueByMonth,
+          ordersByStatus,
+        });
+      } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: "Failed to fetch sales report" });
+      }
+    });
+
+
+    /* ================= SELLER Earnings ================= */
+
+
+    app.get("/seller/earnings", async (req, res) => {
+      try {
+        const { email } = req.query;
+
+        if (!email) {
+          return res.status(400).send({ message: "Seller email required" });
+        }
+
+        /* ================= TOTAL REVENUE ================= */
+        const deliveredOrders = await ordersCollection.find({
+          sellerEmail: email,
+          status: "delivered",
+        }).toArray();
+
+        const totalRevenue = deliveredOrders.reduce(
+          (sum, order) => sum + order.totalAmount,
+          0
+        );
+
+        /* ================= PAYOUTS ================= */
+        const payouts = await payoutsCollection
+          .find({ sellerEmail: email })
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        const paidOut = payouts
+          .filter(p => p.status === "paid")
+          .reduce((sum, p) => sum + p.amount, 0);
+
+        const pendingPayouts = payouts
+          .filter(p => p.status === "pending" || p.status === "approved")
+          .reduce((sum, p) => sum + p.amount, 0);
+
+        /* ================= BALANCE ================= */
+        const balance = totalRevenue - paidOut - pendingPayouts;
+
+        res.send({
+          totalRevenue,
+          paidOut,
+          pendingPayouts,
+          balance,
+          payouts,
+        });
+
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "Failed to fetch earnings" });
+      }
+    });
+
+    // seller Payouts
+
+
+    app.post("/seller/payouts", async (req, res) => {
+      try {
+        const { sellerEmail, amount, method } = req.body;
+
+        if (!sellerEmail || !amount || !method) {
+          return res.status(400).send({ message: "Missing fields" });
+        }
+
+        if (amount < 50) {
+          return res.status(400).send({ message: "Minimum payout is $50" });
+        }
+
+        /* ================= CALCULATE BALANCE AGAIN ================= */
+        const deliveredOrders = await ordersCollection.find({
+          sellerEmail,
+          status: "delivered",
+        }).toArray();
+
+        const totalRevenue = deliveredOrders.reduce(
+          (sum, o) => sum + o.totalAmount,
+          0
+        );
+
+        const payouts = await payoutsCollection.find({ sellerEmail }).toArray();
+
+        const paidOut = payouts
+          .filter(p => p.status === "paid")
+          .reduce((s, p) => s + p.amount, 0);
+
+        const pending = payouts
+          .filter(p => p.status === "pending" || p.status === "approved")
+          .reduce((s, p) => s + p.amount, 0);
+
+        const balance = totalRevenue - paidOut - pending;
+
+        if (amount > balance) {
+          return res.status(400).send({ message: "Insufficient balance" });
+        }
+
+        /* ================= CREATE PAYOUT ================= */
+        const payout = {
+          sellerEmail,
+          amount,
+          method,
+          status: "pending",
+          adminNote: "",
+          createdAt: new Date(),
+          processedAt: null,
+        };
+
+        const result = await payoutsCollection.insertOne(payout);
+
+        res.send(result);
+
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "Payout request failed" });
+      }
+    });
+
+    app.patch("/payouts/:id", async (req, res) => {
+      try {
+        const { status, adminNote } = req.body;
+
+        if (!["approved", "rejected", "paid"].includes(status)) {
+          return res.status(400).send({ message: "Invalid status" });
+        }
+
+        const update = {
+          status,
+          adminNote: adminNote || "",
+        };
+
+        if (status === "paid") {
+          update.processedAt = new Date();
+        }
+
+        const result = await payoutsCollection.updateOne(
+          { _id: new ObjectId(req.params.id) },
+          { $set: update }
+        );
+
+        res.send(result);
+
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "Failed to update payout" });
+      }
+    });
+
+
+    app.get("/seller/payouts", async (req, res) => {
+      const { email } = req.query;
+
+      const payouts = await payoutsCollection
+        .find({ sellerEmail: email })
+        .sort({ createdAt: -1 })
+        .toArray();
+
+      res.send(payouts);
+    });
+
+
+    /* ================== SELLER PROFILE ================== */
+
+    // GET seller profile
+    app.get("/seller/profile", async (req, res) => {
+      try {
+        const email = req.query.email;
+        if (!email) return res.status(400).json({ message: "Email is required" });
+
+        const seller = await sellersCollection.findOne({ email });
+        if (!seller) return res.status(404).json({ message: "Seller not found" });
+
+        res.json(seller);
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Failed to fetch profile" });
+      }
+    });
+
+    // UPDATE seller profile
+    app.put("/seller/profile", async (req, res) => {
+      try {
+        const { email, storeName, description, avatar, banner, phone, socialLinks, password } = req.body;
+        if (!email) return res.status(400).json({ message: "Email is required" });
+
+        const updateFields = { storeName, description, avatar, banner, phone, socialLinks };
+
+        if (password) {
+          // Hash the password before saving
+          const bcrypt = require("bcryptjs");
+          const hashedPassword = await bcrypt.hash(password, 10);
+          updateFields.password = hashedPassword;
+        }
+
+        const result = await sellersCollection.updateOne(
+          { email },
+          { $set: updateFields }
+        );
+
+        res.json({ success: true, result });
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Failed to update profile" });
+      }
+    });
+
+
+
+
+    /* ================= SELLER ORDERS ================= */
+
+
+    app.post("/orders", async (req, res) => {
+      const order = {
+        ...req.body,
+        status: "pending",
+        createdAt: new Date(),
+      };
+
+      const result = await ordersCollection.insertOne(order);
+      res.send(result);
+    });
+
+
+    app.get("/seller/orders", async (req, res) => {
+      const { email, status } = req.query;
+
+      const query = { sellerEmail: email };
+
+      if (status) {
+        query.status = status;
+      }
+
+      const orders = await ordersCollection
+        .find(query)
+        .sort({ createdAt: -1 })
+        .toArray();
+
+      res.send(orders);
+    });
+
+
+    app.patch("/orders/:id", async (req, res) => {
+      const { status } = req.body;
+
+      const result = await ordersCollection.updateOne(
+        { _id: new ObjectId(req.params.id) },
+        { $set: { status } }
+      );
+
+      res.send(result);
+    });
 
 
     /* ================= ADD PRODUCT ================= */
