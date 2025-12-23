@@ -91,6 +91,9 @@ async function run() {
       res.send(result);
     });
 
+
+
+
     // GET /sellers/top
     app.get("/sellers/top", async (req, res) => {
       try {
@@ -215,6 +218,78 @@ async function run() {
         recentOrders,
       });
     });
+
+
+    /* ================= SELLER STORE PAGE ================= */
+
+    app.get("/stores/:sellerId", async (req, res) => {
+      try {
+        // const sellerId = req.params.sellerId;
+        const { sellerId } = req.params;
+
+        // Find seller
+        // const seller = await sellersCollection.findOne({
+        //   _id: new ObjectId(sellerId)
+        // });
+
+        const seller = await sellersCollection.findOne({
+          _id: new ObjectId(sellerId)
+        });
+        if (!ObjectId.isValid(sellerId)) {
+          return res.status(400).send({ message: "Invalid seller ID" });
+        }
+
+        if (!seller) {
+          return res.status(404).send({ message: "Seller not found" });
+        }
+
+        // Fetch seller products
+        const products = await productsCollection
+          .find({ sellerId, status: "active" })
+          .toArray();
+
+        // Fetch completed orders for total sales
+        const completedOrders = await ordersCollection
+          .find({ sellerId, status: "completed" })
+          .toArray();
+
+        const totalSales = completedOrders.reduce((sum, o) => sum + o.totalAmount, 0);
+
+        // Fetch reviews
+        const reviews = await reviewsCollection
+          .find({ sellerId })
+          .toArray();
+
+        const rating =
+          reviews.length > 0
+            ? (reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length).toFixed(1)
+            : 0;
+
+        res.send({
+          store: {
+            storeName: seller.storeName,
+            description: seller.storeDescription,
+            avatar: seller.avatar,
+            banner: seller.banner,
+            location: seller.location,
+            website: seller.website || null
+          },
+          stats: {
+            totalProducts: products.length,
+            totalSales,
+            rating,
+            totalReviews: reviews.length,
+            followersCount: seller.followers?.length || 0
+          },
+          products,
+          reviews
+        });
+      } catch (error) {
+        console.error("Seller store page error:", error);
+        res.status(500).send({ message: "Failed to fetch seller store page" });
+      }
+    });
+
 
 
     /* ================= SELLER Sales Report ================= */
@@ -998,6 +1073,116 @@ async function run() {
 
       res.send(related);
     });
+
+
+    // ================= ADMIN DASHBOARD =================
+
+
+    app.get("/admin/overview", async (req, res) => {
+      try {
+        const totalUsers = await usersCollection.countDocuments();
+        const totalSellers = await sellersCollection.countDocuments();
+        const pendingSellers = await sellersCollection.countDocuments({
+          status: "pending",
+        });
+
+        const totalProducts = await productsCollection.countDocuments();
+        const totalOrders = await ordersCollection.countDocuments();
+
+        const pendingWithdraws = await payoutsCollection.countDocuments({
+          status: "pending",
+        });
+
+        res.send({
+          totalUsers,
+          totalSellers,
+          pendingSellers,
+          totalProducts,
+          totalOrders,
+          pendingWithdraws,
+        });
+      } catch (error) {
+        console.error("Admin overview error:", error);
+        res.status(500).send({ message: "Failed to load admin overview" });
+      }
+    });
+
+
+    // ================= ADMIN - MANAGE USERS =================
+    app.get("/admin/users", async (req, res) => {
+      try {
+        const users = await usersCollection
+          .find()
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        res.send(users);
+      } catch (error) {
+        console.error("Fetch users error:", error);
+        res.status(500).send({ message: "Failed to fetch users" });
+      }
+    });
+
+
+    // EDIT USER (name, phone)
+    app.patch("/admin/users/:id", async (req, res) => {
+      try {
+        const { name, phone } = req.body;
+
+        const result = await usersCollection.updateOne(
+          { _id: new ObjectId(req.params.id) },
+          {
+            $set: {
+              name,
+              phone,
+            },
+          }
+        );
+
+        res.send({ success: true, result });
+      } catch (error) {
+        console.error("Edit user error:", error);
+        res.status(500).send({ message: "Failed to update user" });
+      }
+    });
+
+
+    // SUSPEND / ACTIVATE USER
+    app.patch("/admin/users/:id/status", async (req, res) => {
+      try {
+        const { status } = req.body;
+
+        if (!["active", "suspended"].includes(status)) {
+          return res.status(400).send({ message: "Invalid status" });
+        }
+
+        const result = await usersCollection.updateOne(
+          { _id: new ObjectId(req.params.id) },
+          { $set: { status } }
+        );
+
+        res.send({ success: true, result });
+      } catch (error) {
+        console.error("Update status error:", error);
+        res.status(500).send({ message: "Failed to update status" });
+      }
+    });
+
+
+    app.delete("/admin/users/:id", async (req, res) => {
+      try {
+        await usersCollection.deleteOne({
+          _id: new ObjectId(req.params.id),
+        });
+
+        res.send({ success: true });
+      } catch (error) {
+        console.error("Delete user error:", error);
+        res.status(500).send({ message: "Failed to delete user" });
+      }
+    });
+
+
 
     console.log("✅ MongoDB connected");
   } finally {
