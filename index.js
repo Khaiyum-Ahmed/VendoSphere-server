@@ -1109,6 +1109,7 @@ async function run() {
 
 
     // ================= ADMIN - MANAGE USERS =================
+
     app.get("/admin/users", async (req, res) => {
       try {
         const users = await usersCollection
@@ -1181,6 +1182,461 @@ async function run() {
         res.status(500).send({ message: "Failed to delete user" });
       }
     });
+
+
+
+    // ================= ADMIN - MANAGE SELLERS =================
+
+    app.get("/admin/sellers", async (req, res) => {
+      try {
+        const sellers = await sellersCollection
+          .find()
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        // add rating dynamically
+        const sellersWithRating = await Promise.all(
+          sellers.map(async (seller) => {
+            const reviews = await reviewsCollection
+              .find({ sellerId: seller._id.toString() })
+              .toArray();
+
+            const rating =
+              reviews.length > 0
+                ? (
+                  reviews.reduce((s, r) => s + r.rating, 0) / reviews.length
+                ).toFixed(1)
+                : 0;
+
+            return { ...seller, rating };
+          })
+        );
+
+        res.send(sellersWithRating);
+      } catch (error) {
+        console.error("Fetch sellers error:", error);
+        res.status(500).send({ message: "Failed to fetch sellers" });
+      }
+    });
+
+    // seller Approve/reject 
+
+    app.patch("/admin/sellers/status/:id", async (req, res) => {
+      try {
+        const { status } = req.body;
+        if (!["approved", "rejected", "suspended"].includes(status)) {
+          return res.status(400).send({ message: "Invalid status" });
+        }
+
+        const seller = await sellersCollection.findOne({
+          _id: new ObjectId(req.params.id),
+        });
+
+        await sellersCollection.updateOne(
+          { _id: new ObjectId(req.params.id) },
+          { $set: { status } }
+        );
+
+        // Send email
+        await transporter.sendMail({
+          from: `"VendoSphere" <${process.env.MAIL_USER}>`,
+          to: seller.email,
+          subject: "Seller Application Update",
+          html: `
+        <h3>Hello ${seller.storeName}</h3>
+        <p>Your seller request has been <b>${status.toUpperCase()}</b>.</p>
+        <p>Thank you for being with VendoSphere.</p>
+      `,
+        });
+
+        res.send({ success: true });
+      } catch (error) {
+        console.error("Update seller status error:", error);
+        res.status(500).send({ message: "Failed to update seller status" });
+      }
+    });
+
+
+    // Edit seller info 
+
+    app.patch("/admin/sellers/:id", async (req, res) => {
+      try {
+        const { storeName, avatar, banner } = req.body;
+
+        const result = await sellersCollection.updateOne(
+          { _id: new ObjectId(req.params.id) },
+          {
+            $set: { storeName, avatar, banner },
+          }
+        );
+
+        res.send({ success: true, result });
+      } catch (error) {
+        console.error("Edit seller error:", error);
+        res.status(500).send({ message: "Failed to update seller" });
+      }
+    });
+
+
+    // Delete Seller
+
+    app.delete("/admin/sellers/:id", async (req, res) => {
+      try {
+        const sellerId = req.params.id;
+
+        // delete seller
+        const seller = await sellersCollection.findOne({
+          _id: new ObjectId(sellerId),
+        });
+
+        await sellersCollection.deleteOne({
+          _id: new ObjectId(sellerId),
+        });
+
+        // delete seller products
+        await productsCollection.deleteMany({
+          sellerEmail: seller.email,
+        });
+
+        res.send({ success: true });
+      } catch (error) {
+        console.error("Delete seller error:", error);
+        res.status(500).send({ message: "Failed to delete seller" });
+      }
+    });
+
+
+
+    // ================= ADMIN - MANAGE PRODUCTS =================
+
+    app.get("/admin/products", async (req, res) => {
+      try {
+        const products = await productsCollection
+          .find()
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        // attach seller info
+        const productsWithSeller = await Promise.all(
+          products.map(async (product) => {
+            const seller = await sellersCollection.findOne({
+              email: product.sellerEmail,
+            });
+
+            return {
+              ...product,
+              sellerName: seller?.shopName || "Unknown",
+              sellerId: seller?._id || null,
+            };
+          })
+        );
+
+        res.send(productsWithSeller);
+      } catch (error) {
+        console.error("Admin products error:", error);
+        res.status(500).send({ message: "Failed to load products" });
+      }
+    });
+
+    // approve / inactive / removed product
+
+    app.patch("/admin/products/status/:id", async (req, res) => {
+      try {
+        const { status } = req.body;
+
+        if (!["active", "inactive", "removed"].includes(status)) {
+          return res.status(400).send({ message: "Invalid status" });
+        }
+
+        const result = await productsCollection.updateOne(
+          { _id: new ObjectId(req.params.id) },
+          { $set: { status } }
+        );
+
+        res.send({ success: true, result });
+      } catch (error) {
+        console.error("Update product status error:", error);
+        res.status(500).send({ message: "Failed to update status" });
+      }
+    });
+
+    // edit product 
+
+    app.patch("/admin/products/:id", async (req, res) => {
+      try {
+        const updateData = req.body;
+        delete updateData._id;
+
+        const result = await productsCollection.updateOne(
+          { _id: new ObjectId(req.params.id) },
+          { $set: updateData }
+        );
+
+        res.send({ success: true, result });
+      } catch (error) {
+        console.error("Admin edit product error:", error);
+        res.status(500).send({ message: "Failed to update product" });
+      }
+    });
+
+
+    // delete product
+
+    app.delete("/admin/products/:id", async (req, res) => {
+      try {
+        await productsCollection.deleteOne({
+          _id: new ObjectId(req.params.id),
+        });
+
+        res.send({ success: true });
+      } catch (error) {
+        console.error("Admin delete product error:", error);
+        res.status(500).send({ message: "Failed to delete product" });
+      }
+    });
+
+
+    // ================= ADMIN - MANAGE Orders =================
+
+
+    app.get("/admin/orders", async (req, res) => {
+      try {
+        const { status, seller, startDate, endDate } = req.query;
+
+        let query = {};
+
+        if (status) query.status = status;
+        if (seller) query.sellerId = seller;
+
+        if (startDate || endDate) {
+          query.createdAt = {};
+          if (startDate) query.createdAt.$gte = new Date(startDate);
+          if (endDate) query.createdAt.$lte = new Date(endDate);
+        }
+
+        const orders = await ordersCollection
+          .find(query)
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        res.send(orders);
+      } catch (error) {
+        console.error("Admin orders error:", error);
+        res.status(500).send({ message: "Failed to load orders" });
+      }
+    });
+
+    // update order status
+
+    app.patch("/admin/orders/status/:id", async (req, res) => {
+      const { status } = req.body;
+
+      if (!["pending", "shipped", "delivered", "cancelled"].includes(status)) {
+        return res.status(400).send({ message: "Invalid status" });
+      }
+
+      const result = await ordersCollection.updateOne(
+        { _id: new ObjectId(req.params.id) },
+        { $set: { status } }
+      );
+
+      res.send({ success: true, result });
+    });
+
+    // Bulk status update
+
+    app.patch("/admin/orders/bulk-status", async (req, res) => {
+      const { orderIds, status } = req.body;
+
+      const result = await ordersCollection.updateMany(
+        { _id: { $in: orderIds.map(id => new ObjectId(id)) } },
+        { $set: { status } }
+      );
+
+      res.send({ success: true, result });
+    });
+
+    // cancel order
+
+    app.patch("/admin/orders/cancel/:id", async (req, res) => {
+      await ordersCollection.updateOne(
+        { _id: new ObjectId(req.params.id) },
+        { $set: { status: "cancelled" } }
+      );
+
+      res.send({ success: true });
+    });
+
+
+    // ================= ADMIN - MANAGE Payouts =================
+
+
+    app.get("/admin/payouts", async (req, res) => {
+      const payouts = await payoutsCollection
+        .find({})
+        .sort({ requestedAt: -1 })
+        .toArray();
+
+      res.send(payouts);
+    });
+
+    // update payout status
+
+    app.patch("/admin/payouts/:id", async (req, res) => {
+      const { status, adminNotes } = req.body;
+
+      const result = await payoutsCollection.updateOne(
+        { _id: new ObjectId(req.params.id) },
+        {
+          $set: {
+            status,
+            adminNotes,
+            updatedAt: new Date(),
+          },
+        }
+      );
+
+      // 📧 EMAIL NOTIFICATION (hook)
+      // sendPayoutStatusEmail(sellerEmail, status, adminNotes);
+
+      res.send({ success: true, result });
+    });
+
+
+    // pending payout total 
+
+    app.get("/admin/payouts/summary", async (req, res) => {
+      const pending = await payoutsCollection.aggregate([
+        { $match: { status: "pending" } },
+        { $group: { _id: null, total: { $sum: "$amount" } } }
+      ]).toArray();
+
+      res.send({
+        pendingTotal: pending[0]?.total || 0,
+      });
+    });
+
+
+
+    // ================= ADMIN - Analytics overview =================
+
+
+    app.get("/admin/analytics/revenue", async (req, res) => {
+      try {
+        const orders = await ordersCollection
+          .find({ status: "delivered" })
+          .toArray();
+
+        const revenueMap = {};
+
+        orders.forEach(order => {
+          const date = new Date(order.createdAt);
+          const key = date.toLocaleString("default", {
+            month: "short",
+            year: "numeric",
+          });
+
+          revenueMap[key] = (revenueMap[key] || 0) + order.totalAmount;
+        });
+
+        const result = Object.entries(revenueMap).map(([month, revenue]) => ({
+          month,
+          revenue,
+        }));
+
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ message: "Revenue analytics failed" });
+      }
+    });
+
+    // order by status
+
+    app.get("/admin/analytics/orders-status", async (req, res) => {
+      const statuses = ["pending", "processing", "shipped", "delivered", "cancelled"];
+
+      const data = await Promise.all(
+        statuses.map(async (status) => ({
+          name: status,
+          value: await ordersCollection.countDocuments({ status }),
+        }))
+      );
+
+      res.send(data);
+    });
+
+    // top seller by revenue
+
+    app.get("/admin/analytics/top-sellers", async (req, res) => {
+      const orders = await ordersCollection.find({ status: "delivered" }).toArray();
+
+      const sellerRevenue = {};
+
+      orders.forEach(order => {
+        order.products.forEach(p => {
+          sellerRevenue[p.sellerEmail] =
+            (sellerRevenue[p.sellerEmail] || 0) + p.price * p.quantity;
+        });
+      });
+
+      const result = Object.entries(sellerRevenue)
+        .map(([seller, revenue]) => ({ seller, revenue }))
+        .sort((a, b) => b.revenue - a.revenue)
+        .slice(0, 5);
+
+      res.send(result);
+    });
+
+    // top selling products
+
+    app.get("/admin/analytics/top-products", async (req, res) => {
+      const products = await productsCollection
+        .find()
+        .sort({ sold: -1 })
+        .limit(5)
+        .toArray();
+
+      res.send(
+        products.map(p => ({
+          name: p.productName,
+          sold: p.sold || 0,
+        }))
+      );
+    });
+
+    // New user signup per months
+
+    app.get("/admin/analytics/users-growth", async (req, res) => {
+      const users = await usersCollection.find().toArray();
+
+      const map = {};
+
+      users.forEach(u => {
+        const date = new Date(u.createdAt);
+        const key = date.toLocaleString("default", {
+          month: "short",
+          year: "numeric",
+        });
+
+        map[key] = (map[key] || 0) + 1;
+      });
+
+      const result = Object.entries(map).map(([month, users]) => ({
+        month,
+        users,
+      }));
+
+      res.send(result);
+    });
+
+
+
+
+
+
+
+
+
 
 
 
