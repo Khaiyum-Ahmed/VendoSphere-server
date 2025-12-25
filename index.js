@@ -3,6 +3,7 @@ const cors = require("cors");
 const dotenv = require("dotenv");
 const nodemailer = require("nodemailer");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+const admin = require("firebase-admin");
 
 dotenv.config();
 
@@ -16,14 +17,17 @@ const transporter = nodemailer.createTransport({
 });
 
 
-
-
 const app = express();
 const PORT = process.env.PORT || 5000;
 
 // Middleware
 app.use(cors());
 app.use(express.json());
+
+
+// admin.initializeApp({
+//   credential: admin.credential.cert(serviceAccount)
+// });
 
 // MongoDB URI
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.rukwqku.mongodb.net/?appName=Cluster0`;
@@ -52,7 +56,35 @@ async function run() {
     const cartsCollection = db.collection("carts");
     const ordersCollection = db.collection("orders");
     const payoutsCollection = db.collection("payouts");
+    const wishlistCollection = db.collection("wishlists");
 
+
+
+
+    // custom middlewares
+
+    //   const verifyFBToken = async (req, res, next) => {
+    //     const authHeader = req.headers.authorization;
+    //     if (!authHeader) {
+    //         return res.status(401).send({ message: 'UnAuthorized access' })
+    //     }
+    //     const token = authHeader.split(' ')[1];
+    //     if (!token) {
+    //         return res.status(401).send({ message: 'UnAuthorized access' })
+    //     }
+    //     // verify the token
+    //     try {
+    //         const decoded = await admin.auth().verifyIdToken(token);
+    //         req.decoded = decoded;
+    //         next();
+    //     }
+    //     catch (error) {
+    //         return res.status(403).send({ message: 'Forbidden access' })
+    //     }
+
+    //     console.log('header in middleware', authHeader)
+
+    // }
 
 
     /* ================= USERS ================= */
@@ -74,6 +106,92 @@ async function run() {
       const user = await usersCollection.findOne({ email: req.params.email });
       res.send({ role: user?.role || "customer" });
     });
+
+    app.patch("/users/profile", async (req, res) => {
+      try {
+        const { email, name, phone, image } = req.body;
+
+        if (!email) {
+          return res.status(400).send({ message: "Email is required" });
+        }
+
+        const result = await usersCollection.updateOne(
+          { email },
+          {
+            $set: {
+              name,
+              phone,
+              image,
+              updatedAt: new Date(),
+            },
+          }
+        );
+
+        res.send({ success: true, result });
+      } catch (error) {
+        console.error("Profile update error:", error);
+        res.status(500).send({ message: "Profile update failed" });
+      }
+    });
+
+    /* ================= Customer ================= */
+
+    app.get("/customer/profile", async (req, res) => {
+      try {
+        const { email } = req.query;
+
+        if (!email) {
+          return res.status(400).send({ message: "Email is required" });
+        }
+
+        const user = await usersCollection.findOne(
+          { email },
+          { projection: { password: 0 } } // safety
+        );
+
+        if (!user) {
+          return res.status(404).send({ message: "User not found" });
+        }
+
+        res.send(user);
+      } catch (error) {
+        console.error("Customer profile fetch error:", error);
+        res.status(500).send({ message: "Failed to load profile" });
+      }
+    });
+
+    app.patch("/customer/profile", async (req, res) => {
+      try {
+        const { email, name, phone, address } = req.body;
+
+        if (!email) {
+          return res.status(400).send({ message: "Email is required" });
+        }
+
+        const updateData = {
+          name,
+          phone,
+          address,
+          updatedAt: new Date(),
+        };
+
+        const result = await usersCollection.updateOne(
+          { email },
+          { $set: updateData }
+        );
+
+        if (result.modifiedCount === 0) {
+          return res.send({ success: false, message: "No changes detected" });
+        }
+
+        res.send({ success: true });
+      } catch (error) {
+        console.error("Customer profile update error:", error);
+        res.status(500).send({ message: "Profile update failed" });
+      }
+    });
+
+
 
 
     /* ================= SELLER ================= */
@@ -934,6 +1052,78 @@ async function run() {
         res.status(500).json({ message: "Subscription failed" });
       }
     });
+
+    /* ================= WishList PRODUCTS ================= */
+
+
+    // ADD TO WISHLIST
+    app.post("/wishlist", async (req, res) => {
+      try {
+        const { userEmail, productId } = req.body;
+
+        if (!userEmail || !productId) {
+          return res.status(400).send({ message: "Missing data" });
+        }
+
+        const exists = await wishlistCollection.findOne({
+          userEmail,
+          productId : new ObjectId(productId)
+        });
+
+        if (exists) {
+          return res.status(409).send({ message: "Already in wishlist" });
+        }
+
+        await wishlistCollection.insertOne({
+          userEmail,
+          productId: new ObjectId(productId),
+          createdAt: new Date(),
+        });
+
+        res.send({ success: true });
+      } catch (error) {
+        console.error("Wishlist add error:", error);
+        res.status(500).send({ message: "Failed to add wishlist" });
+      }
+    });
+
+    // GET USER WISHLIST /:email
+    app.get("/wishlist", async (req, res) => {
+      // const email = req.params.email;
+      const {email} = req.query;
+
+      const wishlist = await wishlistCollection
+        .aggregate([
+          { $match: { userEmail: email } },
+          {
+            $lookup: {
+              from: "products",
+              localField: "productId",
+              foreignField: "_id",
+              as: "product",
+            },
+          },
+          { $unwind: "$product" },
+        ])
+        .toArray();
+
+      res.send(wishlist);
+    });
+
+    // REMOVE FROM WISHLIST
+    app.delete("/wishlist", async (req, res) => {
+      const { userEmail, productId } = req.body;
+
+      await wishlistCollection.deleteOne({
+        userEmail,
+        productId: new ObjectId(productId),
+      });
+
+      res.send({ success: true });
+    });
+
+
+
 
 
     /* ================= Cart PRODUCTS ================= */
