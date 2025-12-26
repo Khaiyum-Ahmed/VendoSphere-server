@@ -338,6 +338,49 @@ async function run() {
     });
 
 
+
+    app.get("/customer-stats", async (req, res) => {
+      const { email } = req.query;
+
+      const orders = await ordersCollection.find({ userEmail: email }).toArray();
+      const wishlist = await wishlistCollection.findOne({ userEmail: email });
+
+      const totalSpent = orders.reduce((sum, o) => sum + o.total, 0);
+
+      const statusCount = {
+        pendingOrders: orders.filter(o => o.status === "pending").length,
+        shippedOrders: orders.filter(o => o.status === "shipped").length,
+        deliveredOrders: orders.filter(o => o.status === "delivered").length,
+        cancelledOrders: orders.filter(o => o.status === "cancelled").length,
+      };
+
+      res.send({
+        totalOrders: orders.length,
+        totalSpent,
+        wishlistCount: wishlist?.items?.length || 0,
+        ...statusCount,
+        notifications: [
+          statusCount.pendingOrders > 0 && "You have pending orders",
+          statusCount.shippedOrders > 0 && "Some orders are on the way",
+        ].filter(Boolean),
+      });
+    });
+
+    app.get("/recent-orders", async (req, res) => {
+      const { email } = req.query;
+
+      const orders = await ordersCollection
+        .find({ userEmail: email })
+        .sort({ createdAt: -1 })
+        .limit(5)
+        .toArray();
+
+      res.send(orders);
+    });
+
+
+
+
     /* ================= SELLER STORE PAGE ================= */
 
     app.get("/stores/:sellerId", async (req, res) => {
@@ -1064,10 +1107,14 @@ async function run() {
         if (!userEmail || !productId) {
           return res.status(400).send({ message: "Missing data" });
         }
+        if (!ObjectId.isValid(productId)) {
+          return res.status(400).send({ message: "Invalid product ID" });
+        }
+
 
         const exists = await wishlistCollection.findOne({
           userEmail,
-          productId : new ObjectId(productId)
+          productId: new ObjectId(productId)
         });
 
         if (exists) {
@@ -1090,7 +1137,7 @@ async function run() {
     // GET USER WISHLIST /:email
     app.get("/wishlist", async (req, res) => {
       // const email = req.params.email;
-      const {email} = req.query;
+      const { email } = req.query;
 
       const wishlist = await wishlistCollection
         .aggregate([
@@ -1120,6 +1167,149 @@ async function run() {
       });
 
       res.send({ success: true });
+    });
+
+
+    /* ================= ORDERS PRODUCTS ================= */
+
+
+    app.get("/orders", async (req, res) => {
+      const { email, status, search, sort } = req.query;
+
+      const query = { userEmail: email };
+
+      if (status) query.status = status;
+
+      if (search) {
+        query._id = new ObjectId(search);
+      }
+
+      let cursor = ordersCollection.find(query);
+
+      if (sort === "oldest") {
+        cursor = cursor.sort({ createdAt: 1 });
+      } else {
+        cursor = cursor.sort({ createdAt: -1 });
+      }
+
+      const orders = await cursor.toArray();
+      res.send(orders);
+    });
+
+
+    // GET /orders/:id
+    app.get("/orders/:id", async (req, res) => {
+      const order = await ordersCollection.findOne({
+        _id: new ObjectId(req.params.id),
+      });
+
+      res.send(order);
+    });
+
+    app.patch("/orders/:id/cancel", async (req, res) => {
+      const order = await ordersCollection.findOne({
+        _id: new ObjectId(req.params.id),
+      });
+
+      if (order.status !== "Pending") {
+        return res.status(400).send({ message: "Order cannot be cancelled" });
+      }
+
+      const created = new Date(order.createdAt);
+      const now = new Date();
+      const diffMinutes = (now - created) / (1000 * 60);
+
+      if (diffMinutes > 60) {
+        return res.status(403).send({ message: "Cancellation window expired" });
+      }
+
+      await ordersCollection.updateOne(
+        { _id: order._id },
+        { $set: { status: "Cancelled" } }
+      );
+
+      res.send({ success: true });
+    });
+
+
+
+    /* ================= REORDER ================= */
+
+    app.post("/orders/:id/reorder", async (req, res) => {
+      try {
+        const orderId = req.params.id;
+
+        const order = await ordersCollection.findOne({
+          _id: new ObjectId(orderId),
+        });
+
+        if (!order) {
+          return res.status(404).send({ message: "Order not found" });
+        }
+
+        const { userEmail, products } = order;
+
+        const cart = await cartsCollection.findOne({ userEmail });
+
+        if (!cart) {
+          // create cart from order
+          await cartsCollection.insertOne({
+            userEmail,
+            items: products.map(p => ({
+              productId: new ObjectId(p.productId),
+              name: p.name,
+              price: p.price,
+              image: p.image,
+              quantity: p.quantity,
+            })),
+            updatedAt: new Date(),
+          });
+
+          return res.send({ success: true });
+        }
+
+        // merge items
+        for (const item of products) {
+          const exists = cart.items.find(
+            i => i.productId.toString() === item.productId
+          );
+
+          if (exists) {
+            await cartsCollection.updateOne(
+              {
+                userEmail,
+                "items.productId": new ObjectId(item.productId),
+              },
+              { $inc: { "items.$.quantity": item.quantity } }
+            );
+          } else {
+            await cartsCollection.updateOne(
+              { userEmail },
+              {
+                $push: {
+                  items: {
+                    productId: new ObjectId(item.productId),
+                    name: item.name,
+                    price: item.price,
+                    image: item.image,
+                    quantity: item.quantity,
+                  },
+                },
+              }
+            );
+          }
+        }
+
+        await cartsCollection.updateOne(
+          { userEmail },
+          { $set: { updatedAt: new Date() } }
+        );
+
+        res.send({ success: true });
+      } catch (error) {
+        console.error("Reorder error:", error);
+        res.status(500).send({ message: "Reorder failed" });
+      }
     });
 
 
