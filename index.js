@@ -97,7 +97,7 @@ async function run() {
         return res.status(403).send({ message: 'Forbidden access' })
       }
 
-      console.log('header in middleware', authHeader)
+      // console.log('header in middleware', authHeader)
 
     }
 
@@ -1190,8 +1190,8 @@ async function run() {
     app.get("/orders", async (req, res) => {
       const { email, status, search, sort } = req.query;
 
-      const query = { userEmail: email };
-
+      const query = {};
+      if(email) query.email = email;
       if (status) query.status = status;
 
       if (search) {
@@ -2202,7 +2202,9 @@ async function run() {
           { _id: new ObjectId(orderId) },
           {
             $set: {
-              status: 'paid'
+              status: "paid",
+              transactionId,
+              paidAt: new Date(),
             }
           }
         );
