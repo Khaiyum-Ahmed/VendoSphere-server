@@ -32,8 +32,10 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
+const decodedKey = Buffer.from(process.env.FB_SERVICE_KEY, 'base64').toString('utf8');
 
-const serviceAccount = require("./firebase-admin-key.json");
+const serviceAccount = JSON.parse(decodedKey);
+
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
 });
@@ -1191,7 +1193,7 @@ async function run() {
       const { email, status, search, sort } = req.query;
 
       const query = {};
-      if(email) query.email = email;
+      if (email) query.email = email;
       if (status) query.status = status;
 
       if (search) {
@@ -2193,9 +2195,13 @@ async function run() {
     });
 
 
-    app.post('/payments', async (req, res) => {
+    app.post('/payments', verifyFBToken, async (req, res) => {
+
       try {
         const { orderId, email, amount, paymentMethod, transactionId } = req.body;
+        if (req.decoded.email !== email) {
+          return res.status(403).send({ message: "Unauthorized payment attempt" });
+        }
 
         // 1. Update order's payment_status
         const updateResult = await ordersCollection.updateOne(
